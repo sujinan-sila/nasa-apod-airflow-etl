@@ -1,45 +1,81 @@
-Overview
-========
+# NASA APOD Airflow ETL
 
-Welcome to Astronomer! This project was generated after you ran 'astro dev init' using the Astronomer CLI. This readme describes the contents of the project, as well as how to run Apache Airflow on your local machine.
+Daily ETL pipeline on Apache Airflow 3: pulls NASA's [Astronomy Picture of the Day](https://api.nasa.gov/) for each run's own date, keeps the fields that matter, and loads them into Postgres. Runs locally with the Astro CLI in Docker.
 
-Project Contents
-================
+> **Status: in progress.** The local stack and the table-creation step are working. Extract, transform and load are next; see [Progress](#progress).
 
-Your Astro project contains the following files and folders:
+## Architecture
 
-- dags: This folder contains the Python files for your Airflow Dags. By default, this directory includes one example Dag:
-    - `example_astronauts`: This Dag shows a simple ETL pipeline example that queries the list of astronauts currently in space from the Open Notify API and prints a statement for each astronaut. The Dag uses the TaskFlow API to define tasks in Python, and dynamic task mapping to dynamically print a statement for each astronaut. For more on how this Dag works, see our [Getting started tutorial](https://www.astronomer.io/docs/learn/get-started-with-airflow).
-- Dockerfile: This file contains a versioned Astro Runtime Docker image that provides a differentiated Airflow experience. If you want to execute other commands or overrides at runtime, specify them here.
-- include: This folder contains any additional files that you want to include as part of your project. It is empty by default.
-- packages.txt: Install OS-level packages needed for your project by adding them to this file. It is empty by default.
-- requirements.txt: Install Python packages needed for your project by adding them to this file. It is empty by default.
-- plugins: Add custom or community plugins for your project to this file. It is empty by default.
-- airflow_settings.yaml: Use this local-only file to specify Airflow Connections, Variables, and Pools instead of entering them in the Airflow UI as you develop Dags in this project.
+```mermaid
+flowchart LR
+    API["NASA APOD API<br/>api.nasa.gov"] -->|HttpOperator| EX["extract_apod"]
+    subgraph AF["Airflow 3 · Astro CLI (Docker)"]
+        CT["create_table"] --> EX
+        EX --> TR["transform"]
+        TR --> LD["load<br/>(upsert)"]
+        LD --> CK["check"]
+    end
+    LD --> PG[("Postgres<br/>apod_data")]
+```
 
-Deploy Your Project Locally
-===========================
+One run per day. Each run asks the API for the picture of its own logical date, not "today", so any past date can be re-run or backfilled and get the right picture.
 
-Start Airflow on your local machine by running 'astro dev start'.
+## Design decisions
 
-This command will spin up five Docker containers on your machine, each for a different Airflow component:
+**A separate Postgres for the pipeline's data.** Airflow ships with its own Postgres for run history, task state and XCom. Pipeline data goes into a second container, `apod-db`, added through `docker-compose.override.yml`. Mixing the two would put business tables next to Airflow's internal ones, and `astro dev kill` would wipe both.
 
-- Postgres: Airflow's Metadata Database
-- Scheduler: The Airflow component responsible for monitoring and triggering tasks
-- Dag Processor: The Airflow component responsible for parsing Dags
-- API Server: The Airflow component responsible for serving the Airflow UI and API
-- Triggerer: The Airflow component responsible for triggering deferred tasks
+**Connections live in `.env`, not in the code.** The DAG only refers to connection names (`apod_db`, `nasa_api`). Host, password and the API key come from `AIRFLOW_CONN_*` environment variables in `.env`, which is git-ignored. Moving to the cloud means changing those variables, not the DAG. `.env.example` shows the expected format.
 
-When all five containers are ready the command will open the browser to the Airflow UI at http://localhost:8080/. You should also be able to access your Postgres Database at 'localhost:5432/postgres' with username 'postgres' and password 'postgres'.
+**The date is the primary key.** NASA publishes one picture per day, so `apod_date` identifies a row. Loading the same date twice overwrites the row instead of adding a duplicate, which matters because Airflow retries failed tasks on its own.
 
-Note: If you already have either of the above ports allocated, you can either [stop your existing Docker containers or change the port](https://www.astronomer.io/docs/astro/cli/troubleshoot-locally#ports-are-not-available-for-my-local-airflow-webserver).
+**Scheduled at 14:00 UTC, not midnight.** APOD publishes on US Eastern time. At 00:00 UTC the current day's picture does not exist yet and the API returns 400.
 
-Deploy Your Project to Astronomer
-=================================
+**Retries with a delay.** Two retries, five minutes apart. An external API that fails once usually fails again if retried immediately.
 
-If you have an Astronomer account, pushing code to a Deployment on Astronomer is simple. For deploying instructions, refer to Astronomer documentation: https://www.astronomer.io/docs/astro/deploy-code/
+## Running it locally
 
-Contact
-=======
+Requires Docker Desktop and the [Astro CLI](https://www.astronomer.io/docs/astro/cli/install-cli).
 
-The Astronomer CLI is maintained with love by the Astronomer team. To report a bug or suggest a change, reach out to our support.
+```bash
+cp .env.example .env      # then fill in your own values
+astro dev start
+```
+
+| Service | Address |
+|---|---|
+| Airflow UI | http://localhost:8080 |
+| Pipeline database (`apod-db`) | `localhost:5434`, database `apod`, user `postgres` |
+
+From inside Docker, Airflow reaches the pipeline database as `apod-db:5432`. The host port is 5434 because 5432 is Airflow's own Postgres and 5433 is commonly taken by a PostgreSQL install on Windows.
+
+Stop with `astro dev stop`. `astro dev kill` deletes all data, including the pipeline database.
+
+## Layout
+
+```
+dags/
+  nasa_apod_postgres.py       the pipeline
+  hello_pipeline.py           practice: task order with PythonOperator
+  math_sequence.py            practice: passing values with XCom
+  math_sequence_taskflow.py   practice: the same DAG with the TaskFlow API
+tests/dags/                   import, tag and retry checks for every DAG
+docker-compose.override.yml   the apod-db Postgres container
+requirements.txt              HTTP and Postgres providers
+.env.example                  connection format, no real secrets
+```
+
+## Stack
+
+Apache Airflow 3 (Task SDK, TaskFlow API) · Astro CLI · Docker · PostgreSQL 16 · NASA APOD API
+
+## Progress
+
+- [x] Local Airflow 3 with the Astro CLI
+- [x] Practice DAGs: task order, XCom, TaskFlow
+- [x] Separate Postgres container for pipeline data, connection in `.env`
+- [x] `create_table` with the date as primary key
+- [ ] Extract from the NASA API by logical date
+- [ ] Transform and idempotent load (upsert)
+- [ ] Row check after load
+- [ ] Backfill and tests
+- [ ] Deploy to Astro Cloud with Postgres on AWS RDS
