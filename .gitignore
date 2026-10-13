@@ -16,3 +16,6 @@ airflow.db
 
 **/.astro/dbt_metadata.json
 **/.astro/manifest.slim.json
+
+.astro/config.yaml.lock
+dags/.airflowignore
