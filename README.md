@@ -2,7 +2,7 @@
 
 Daily ETL pipeline on Apache Airflow 3: pulls NASA's [Astronomy Picture of the Day](https://science.nasa.gov/astronomy-picture-of-the-day/) for each run's own date, cleans it up and loads it into Postgres. Developed locally with the Astro CLI in Docker, deployed to Astro Cloud with Postgres on AWS RDS.
 
-> **Status:** the pipeline runs end to end locally and is backfilled for 2026-09-01 to 2026-10-13 (43 days). Cloud deployment is in progress; see [Progress](#progress).
+> **Status:** working end to end, locally and on Astro Cloud writing to AWS RDS. Backfilled for 2026-09-01 to 2026-10-13 (43 days).
 
 ![DAG graph](docs/images/dag_graph.png)
 
@@ -58,6 +58,23 @@ astro dev run backfill create --dag-id nasa_apod_postgres \
 ```
 
 ![Backfills](docs/images/backfills.png)
+
+## Running in the cloud
+
+The same project is deployed to Astro Cloud with `astro deploy`, on AWS `ap-southeast-1`, next to a PostgreSQL instance on AWS RDS in the same region.
+
+![Astro deployment](docs/images/astro_deployment.png)
+
+| | Local | Cloud |
+|---|---|---|
+| Airflow | Astro CLI in Docker | Astro Cloud, Development deployment (hibernates when idle) |
+| Pipeline database | `apod-db` container | AWS RDS PostgreSQL, `db.t4g.micro` |
+| Connections | `.env` | Deployment environment variables, the database one marked secret |
+| Network access | Docker network | RDS security group allows only the deployment's egress IPs and my own IP |
+
+The DAG code is identical in both places; only the `AIRFLOW_CONN_APOD_DB` value differs. First scheduled run on the cloud, writing to RDS:
+
+![Cloud run](docs/images/cloud_run.png)
 
 ## Design decisions
 
@@ -121,4 +138,4 @@ Apache Airflow 3 (Task SDK, TaskFlow API) · Astro CLI · Astro Cloud · Docker 
 - [x] Data check after load
 - [x] Backfill 2026-09-01 to 2026-10-13
 - [x] Postgres on AWS RDS (ap-southeast-1)
-- [ ] Deploy to Astro Cloud and run against RDS
+- [x] Deploy to Astro Cloud and run against RDS
